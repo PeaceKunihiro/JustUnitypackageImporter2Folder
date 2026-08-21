@@ -344,6 +344,31 @@ Assets/_AvatarArchive/Alice/Alice/Materials/Body.mat
 
 これにより、Prefab・Material・Texture等のGUIDベースの参照関係を可能な限り保持する。
 
+### 長いTARエントリ名
+
+通常のTAR `name` フィールド上限を超えるエントリ名を切り詰めずに解析する。
+
+以下の形式に対応する。
+
+* GNU LongLink
+* POSIX PAX拡張ヘッダーの `path`
+* USTARの `prefix` と `name`
+
+拡張ヘッダーから取得した名前は次の実エントリへ適用し、指定Import先へ同じ相対パスで展開する。
+
+### Import前のパス長検査
+
+Import計画作成後、実際のファイル書き込みや上書き確認より前に全出力パスを検査する。
+
+以下はエラーとしてImportを停止する。
+
+* OSの絶対パス上限を超えるパス
+* ファイル名またはフォルダ名単位の上限を超えるパス
+* OSで使用できない文字や末尾表現を含むパス
+* `Assets` 外を指すパス
+
+Windowsの従来の260文字境界を超えるパス、およびUnityで互換性に注意が必要な非常に長いAssetパスは警告対象とする。警告の詳細はUnity Consoleへ出力し、ユーザーが続行またはキャンセルを選択できるようにする。
+
 ---
 
 ## 11. 通常UnityPackage Import検知

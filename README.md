@@ -14,6 +14,7 @@ Unity標準のUnityPackage Importを置き換えるものではありません�
 - UnityPackage内のAssetをツリー形式・罫線付きで事前表示
 - 複数のトップレベル項目をPackage名のフォルダへまとめてImport
 - UnityPackage読込時に既存プロジェクトとのGUID競合を検査して自動除外
+- GNU LongLink、PAX、USTARを含む長いTARエントリ名に対応
 - ファイルまたはフォルダ単位でImport対象を選択
 - ツリーの一括展開・折りたたみ、全項目の一括選択・解除
 - デフォルトImport先をプロジェクト単位の `EditorUserSettings` に保存
@@ -222,6 +223,18 @@ UnityPackageをJUIへ追加した時点で、各ファイルの `.meta` GUIDを�
 - Package内パス、GUID、既存AssetパスをUnity Consoleへ警告出力
 
 自動除外されたファイルは、内容を確認したうえで手動による再選択も可能です。
+
+## 長いファイルパス
+
+UnityPackage解析では、通常のTAR `name` フィールドに加えて次の長いエントリ名形式を読み取ります。
+
+- GNU LongLink
+- POSIX PAX拡張ヘッダーの `path`
+- USTARの `prefix` と `name`
+
+読み取った名前やUnityPackageの `pathname` は切り詰めず、指定したImport先へそのまま展開します。
+
+Import実行前に全出力パスを検査し、OSの上限、ファイル名単位の上限、使用できない文字などで展開不可能な場合はエラーとして停止します。Windowsの従来の260文字境界や、Unity上で互換性に注意が必要な非常に長いAssetパスは警告として表示し、詳細をUnity Consoleへ出力します。
 
 ## 対象外の機能
 

@@ -60,7 +60,7 @@ UniypackageがJUIに追加された時に、GUIDが競合していないか調�
 JUIに入力クリアボタンを追加
 
 
-主な修正:
+8/21 主な修正:
 - Default Import先と通常Import通知設定をEditorPrefsからプロジェクト単位のEditorUserSettingsへ変更
 - UnityPackage読込時に不正なpathnameを検出し、Assets外を指すPackageを拒否
 - Import計画、競合検査、上書き検査、実書き込みの各段階でAssets外パスを強制拒否
@@ -78,3 +78,11 @@ JUIに入力クリアボタンを追加
   READMEには手動で再選択可能であることを記載済みです。
 - TARのGNU long name/PAX対応は、現行UnityPackageでは実害がほぼないため未追加
 git diff --checkは問題ありません。Unity付属コンパイラの直接実行は、コンパイラ側の依存アセンブリ読込エラーにより完了できなかったため、Unity Editor上での最終コンパイル確認が必要です。
+
+
+8/22　機能追加：長いファイルパスへの対応
+・UnityPackage解析時、tar形式の通常nameフィールド上限を超えるパスに対応するため、GNU LongLink等による長いエントリ名を正しく読み込む。
+・読み込んだ長いパスは切り詰めず、指定Import先へそのまま展開する。
+・展開後のパスがOSまたはUnityの許容範囲を超える場合は、Import前に警告またはエラーを表示する。
+
+

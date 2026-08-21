@@ -630,7 +630,23 @@ namespace JustUnitypackageImporter2Folder
                 return;
             }
 
+            PathValidationResult pathValidation = JUIPathValidator.Check(plans);
+            if (pathValidation.Errors.Count > 0)
+            {
+                foreach (string error in pathValidation.Errors)
+                    JUILog.Error(error);
+
+                EditorUtility.DisplayDialog(
+                    "JUI - パスエラー",
+                    $"Importできないパスを {pathValidation.Errors.Count} 件検出しました。\n" +
+                    "詳細はConsoleを確認してください。",
+                    "OK");
+                return;
+            }
+
             List<string> warnings = JUIConflictChecker.Check(plans);
+            warnings.AddRange(pathValidation.Warnings);
+            warnings = warnings.Distinct().ToList();
             if (warnings.Count > 0)
             {
                 foreach (string warning in warnings)
@@ -1034,7 +1050,10 @@ namespace JustUnitypackageImporter2Folder
             {
                 TarReader.Read(gzip, (name, bytes, typeFlag) =>
                 {
-                    string normalized = name.Replace('\\', '/').TrimStart('.', '/');
+                    string normalized = name.Replace('\\', '/');
+                    while (normalized.StartsWith("./", StringComparison.Ordinal))
+                        normalized = normalized.Substring(2);
+                    normalized = normalized.TrimStart('/');
                     string[] parts = normalized.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
                     if (parts.Length < 2)
                         return;
@@ -1115,6 +1134,107 @@ namespace JustUnitypackageImporter2Folder
             // pathname is normally UTF-8. Strip UTF-8 BOM if present.
             string text = Encoding.UTF8.GetString(bytes);
             return text.TrimStart('\uFEFF');
+        }
+    }
+
+    internal sealed class PathValidationResult
+    {
+        public readonly List<string> Warnings = new List<string>();
+        public readonly List<string> Errors = new List<string>();
+    }
+
+    internal static class JUIPathValidator
+    {
+        private const int WindowsLegacyPathLimit = 260;
+        private const int WindowsExtendedPathLimit = 32767;
+        private const int UnixPathByteLimit = 4096;
+        private const int FileNameByteLimit = 255;
+        private const int UnityCompatibilityWarningLength = 1024;
+
+        public static PathValidationResult Check(IEnumerable<ImportPlan> plans)
+        {
+            var result = new PathValidationResult();
+            bool isWindows = Application.platform == RuntimePlatform.WindowsEditor;
+
+            foreach (ImportPlan plan in plans)
+            {
+                string assetPath = JUIWindow.NormalizeAssetPath(plan.TargetPath);
+                string absolute;
+
+                try
+                {
+                    absolute = JUIWindow.ResolveAssetPathOrThrow(assetPath);
+                }
+                catch (Exception ex)
+                {
+                    result.Errors.Add($"[パスエラー] {assetPath}\n  {ex.Message}");
+                    continue;
+                }
+
+                string[] segments = assetPath.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (string segment in segments.Skip(1))
+                {
+                    if (segment == "." || segment == ".." ||
+                        segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                    {
+                        result.Errors.Add($"[使用不可文字] {assetPath}\n  対象: {segment}");
+                        break;
+                    }
+
+                    int segmentBytes = Encoding.UTF8.GetByteCount(segment);
+                    if (segmentBytes > FileNameByteLimit || (isWindows && segment.Length > 255))
+                    {
+                        result.Errors.Add(
+                            $"[ファイル名が長すぎます] {assetPath}\n" +
+                            $"  対象: {segment} ({segmentBytes} UTF-8 bytes)");
+                        break;
+                    }
+
+                    if (isWindows && (segment.EndsWith(" ", StringComparison.Ordinal) ||
+                                      segment.EndsWith(".", StringComparison.Ordinal)))
+                    {
+                        result.Errors.Add($"[Windowsで使用不可の末尾文字] {assetPath}\n  対象: {segment}");
+                        break;
+                    }
+                }
+
+                if (isWindows)
+                {
+                    if (absolute.Length >= WindowsExtendedPathLimit)
+                    {
+                        result.Errors.Add(
+                            $"[OSパス上限超過] {assetPath}\n" +
+                            $"  絶対パス長: {absolute.Length}");
+                    }
+                    else if (absolute.Length >= WindowsLegacyPathLimit)
+                    {
+                        result.Warnings.Add(
+                            $"[長いパス] {assetPath}\n" +
+                            $"  絶対パス長: {absolute.Length}。UnityまたはWindows設定によってはImportできません。");
+                    }
+                }
+                else
+                {
+                    int absoluteBytes = Encoding.UTF8.GetByteCount(absolute);
+                    if (absoluteBytes >= UnixPathByteLimit)
+                    {
+                        result.Errors.Add(
+                            $"[OSパス上限超過] {assetPath}\n" +
+                            $"  絶対パス長: {absoluteBytes} UTF-8 bytes");
+                    }
+                }
+
+                if (assetPath.Length >= UnityCompatibilityWarningLength)
+                {
+                    result.Warnings.Add(
+                        $"[Unity互換性の注意] Assetパスが非常に長くなっています: {assetPath.Length} 文字\n" +
+                        $"  {assetPath}");
+                }
+            }
+
+            result.Warnings.Sort(StringComparer.OrdinalIgnoreCase);
+            result.Errors.Sort(StringComparer.OrdinalIgnoreCase);
+            return result;
         }
     }
 
@@ -1576,6 +1696,11 @@ namespace JustUnitypackageImporter2Folder
             Debug.LogWarning(Prefix + message);
         }
 
+        public static void Error(string message)
+        {
+            Debug.LogError(Prefix + message);
+        }
+
         public static void Error(string message, Exception exception)
         {
             Debug.LogError(Prefix + message + "\n" + exception.Message);
@@ -1651,8 +1776,8 @@ namespace JustUnitypackageImporter2Folder
     }
 
     /// <summary>
-    /// Small TAR reader sufficient for UnityPackage archives.
-    /// Supports regular files and ignores directory records.
+    /// TAR reader for UnityPackage archives.
+    /// Supports USTAR prefix, GNU LongLink names and PAX path records.
     /// </summary>
     internal static class TarReader
     {
@@ -1661,6 +1786,8 @@ namespace JustUnitypackageImporter2Folder
         public static void Read(Stream stream, Action<string, byte[], byte> onEntry)
         {
             byte[] header = new byte[BlockSize];
+            string pendingLongName = null;
+            string pendingPaxPath = null;
 
             while (true)
             {
@@ -1673,7 +1800,7 @@ namespace JustUnitypackageImporter2Folder
                 if (IsAllZero(header))
                     break;
 
-                string name = ReadNullTerminatedString(header, 0, 100);
+                string headerName = ReadHeaderName(header);
                 long size = ParseOctal(header, 124, 12);
                 byte typeFlag = header[156];
 
@@ -1685,17 +1812,86 @@ namespace JustUnitypackageImporter2Folder
                 {
                     int contentRead = ReadExactlyOrLess(stream, data, 0, (int)size);
                     if (contentRead != (int)size)
-                        throw new InvalidDataException($"TARエントリが途中で終了しています: {name}");
+                        throw new InvalidDataException($"TARエントリが途中で終了しています: {headerName}");
                 }
 
                 long padded = ((size + BlockSize - 1) / BlockSize) * BlockSize;
                 long skip = padded - size;
                 Skip(stream, skip);
 
+                // GNU LongLink: the payload is the full name for the next header.
+                if (typeFlag == (byte)'L')
+                {
+                    pendingLongName = DecodeExtendedName(data);
+                    continue;
+                }
+
+                // POSIX PAX extended header: "path" overrides the next header name.
+                if (typeFlag == (byte)'x')
+                {
+                    pendingPaxPath = ReadPaxPath(data);
+                    continue;
+                }
+
+                string name = !string.IsNullOrEmpty(pendingPaxPath)
+                    ? pendingPaxPath
+                    : !string.IsNullOrEmpty(pendingLongName)
+                        ? pendingLongName
+                        : headerName;
+
+                pendingLongName = null;
+                pendingPaxPath = null;
+
                 // '0' or NUL = regular file. '5' = directory.
                 if (typeFlag == 0 || typeFlag == (byte)'0' || typeFlag == (byte)'5')
                     onEntry(name, data, typeFlag);
             }
+        }
+
+        private static string ReadHeaderName(byte[] header)
+        {
+            string name = ReadNullTerminatedString(header, 0, 100);
+            string prefix = ReadNullTerminatedString(header, 345, 155);
+            return string.IsNullOrEmpty(prefix) ? name : prefix.TrimEnd('/') + "/" + name;
+        }
+
+        private static string DecodeExtendedName(byte[] data)
+        {
+            return Encoding.UTF8.GetString(data).TrimEnd('\0', '\r', '\n');
+        }
+
+        private static string ReadPaxPath(byte[] data)
+        {
+            int position = 0;
+            string path = null;
+
+            while (position < data.Length)
+            {
+                int space = Array.IndexOf(data, (byte)' ', position);
+                if (space < 0)
+                    throw new InvalidDataException("PAXヘッダーのレコード長が不正です。");
+
+                string lengthText = Encoding.ASCII.GetString(data, position, space - position);
+                if (!int.TryParse(lengthText, out int recordLength) || recordLength <= 0)
+                    throw new InvalidDataException("PAXヘッダーのレコード長を解析できません。");
+
+                int recordEnd = checked(position + recordLength);
+                if (recordEnd > data.Length || space + 1 >= recordEnd)
+                    throw new InvalidDataException("PAXヘッダーが途中で終了しています。");
+
+                int valueLength = recordEnd - (space + 1);
+                if (valueLength > 0 && data[recordEnd - 1] == (byte)'\n')
+                    valueLength--;
+
+                string record = Encoding.UTF8.GetString(data, space + 1, valueLength);
+                int equals = record.IndexOf('=');
+                if (equals > 0 && record.Substring(0, equals) == "path")
+                    path = record.Substring(equals + 1);
+
+                position = recordEnd;
+            }
+
+            return path;
         }
 
         private static int ReadExactlyOrLess(Stream stream, byte[] buffer, int offset, int count)
