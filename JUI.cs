@@ -30,6 +30,8 @@ namespace JustUnitypackageImporter2Folder
         private string _packagePath = "";
         private string _destination = "Assets/JUIImport";
         private bool _remapDestination = true;
+        private bool _groupTopLevelItems;
+        private string _groupFolderName = "";
         private Vector2 _scroll;
 
         private List<PackageEntry> _entries = new List<PackageEntry>();
@@ -95,6 +97,20 @@ namespace JustUnitypackageImporter2Folder
                     }
                     EditorGUILayout.EndHorizontal();
                 }
+
+                if (_groupTopLevelItems)
+                {
+                    _groupFolderName = EditorGUILayout.TextField(
+                        "まとめ先フォルダ名",
+                        _groupFolderName);
+
+                    if ((_groupFolderName ?? "").Trim().Length >= 10)
+                    {
+                        EditorGUILayout.HelpBox(
+                            "まとめ先フォルダ名が10文字以上です。フォルダ名が長くなっています。",
+                            MessageType.Warning);
+                    }
+                }
             }
 
             EditorGUILayout.BeginHorizontal();
@@ -153,20 +169,49 @@ namespace JustUnitypackageImporter2Folder
         private void HandleDragAndDrop()
         {
             Rect dropArea = GUILayoutUtility.GetRect(0, 46, GUILayout.ExpandWidth(true));
-            GUI.Box(dropArea, "UnityPackageをここへドラッグ＆ドロップ");
-
             Event e = Event.current;
-            if (!dropArea.Contains(e.mousePosition))
+            bool isPointerInside = dropArea.Contains(e.mousePosition);
+            bool isDragEvent = e.type == EventType.DragUpdated || e.type == EventType.DragPerform;
+            bool hasValidPackage = DragAndDrop.paths.Any(p =>
+                string.Equals(Path.GetExtension(p), ".unitypackage", StringComparison.OrdinalIgnoreCase));
+            bool isValidDragOver = isPointerInside && isDragEvent && hasValidPackage;
+
+            Color borderColor = isValidDragOver
+                ? new Color(0.48f, 0.72f, 1f, 1f)
+                : new Color(0.16f, 0.16f, 0.16f, 1f);
+            Color backgroundColor = isValidDragOver
+                ? new Color(0.24f, 0.43f, 0.64f, 1f)
+                : new Color(0.08f, 0.08f, 0.08f, 1f);
+
+            EditorGUI.DrawRect(dropArea, borderColor);
+            EditorGUI.DrawRect(
+                new Rect(dropArea.x + 1f, dropArea.y + 1f, dropArea.width - 2f, dropArea.height - 2f),
+                backgroundColor);
+
+            var dropLabelStyle = new GUIStyle(EditorStyles.boldLabel)
+            {
+                alignment = TextAnchor.MiddleCenter
+            };
+            dropLabelStyle.normal.textColor = isValidDragOver
+                ? Color.white
+                : new Color(0.72f, 0.72f, 0.72f, 1f);
+            GUI.Label(
+                dropArea,
+                isValidDragOver
+                    ? "ここにドロップして読み込む"
+                    : "UnityPackageをここへドラッグ＆ドロップ",
+                dropLabelStyle);
+
+            if (!isPointerInside)
                 return;
 
-            if (e.type == EventType.DragUpdated || e.type == EventType.DragPerform)
+            if (isDragEvent)
             {
-                bool valid = DragAndDrop.paths.Any(p =>
-                    string.Equals(Path.GetExtension(p), ".unitypackage", StringComparison.OrdinalIgnoreCase));
+                DragAndDrop.visualMode = hasValidPackage
+                    ? DragAndDropVisualMode.Copy
+                    : DragAndDropVisualMode.Rejected;
 
-                DragAndDrop.visualMode = valid ? DragAndDropVisualMode.Copy : DragAndDropVisualMode.Rejected;
-
-                if (e.type == EventType.DragPerform && valid)
+                if (e.type == EventType.DragPerform && hasValidPackage)
                 {
                     DragAndDrop.AcceptDrag();
                     string path = DragAndDrop.paths.First(p =>
@@ -174,6 +219,7 @@ namespace JustUnitypackageImporter2Folder
                     LoadPackage(path);
                 }
 
+                Repaint();
                 e.Use();
             }
         }
@@ -341,6 +387,8 @@ namespace JustUnitypackageImporter2Folder
             _loadError = "";
             _entries.Clear();
             _treeRoot = null;
+            _groupTopLevelItems = false;
+            _groupFolderName = Path.GetFileNameWithoutExtension(path);
 
             try
             {
@@ -352,12 +400,32 @@ namespace JustUnitypackageImporter2Folder
                 if (_entries.Count == 0)
                     _loadError = "UnityPackage内にインポート可能なAssetが見つかりませんでした.";
                 else
+                {
                     JUILog.Info($"UnityPackageを読み込みました: {path} ({_entries.Count} 項目)");
+
+                    int topLevelCount = _treeRoot.Children.Count;
+                    if (topLevelCount >= 2)
+                    {
+                        JUILog.Warning(
+                            $"UnityPackage内に複数のトップレベル項目があります: {topLevelCount} 件");
+                        _groupTopLevelItems = EditorUtility.DisplayDialog(
+                            "JUI - 複数項目の確認",
+                            "UnityPackage内に複数のフォルダ・ファイルがあります。\n" +
+                            "一つのフォルダにまとめますか？",
+                            "まとめる",
+                            "そのまま");
+
+                        JUILog.Info(_groupTopLevelItems
+                            ? $"トップレベル項目をフォルダへまとめます: {_groupFolderName}"
+                            : "トップレベル項目を元の構成のままImportします。");
+                    }
+                }
             }
             catch (Exception ex)
             {
                 _entries.Clear();
                 _treeRoot = null;
+                _groupTopLevelItems = false;
                 _loadError = "UnityPackageの解析に失敗しました。\n" + ex.Message;
                 JUILog.Error("UnityPackageの解析に失敗しました。", ex);
                 Debug.LogException(ex);
@@ -492,6 +560,14 @@ namespace JustUnitypackageImporter2Folder
                 }
             }
 
+            string groupFolderName = _groupFolderName;
+            if (_groupTopLevelItems &&
+                !ValidateFolderName(groupFolderName, out groupFolderName, out string groupNameError))
+            {
+                EditorUtility.DisplayDialog("JUI", groupNameError, "OK");
+                return;
+            }
+
             List<PackageEntry> selected = _entries.Where(x => x.Selected).ToList();
             if (selected.Count == 0)
             {
@@ -505,7 +581,12 @@ namespace JustUnitypackageImporter2Folder
             List<ImportPlan> plans;
             try
             {
-                plans = BuildImportPlans(selected, _remapDestination, destination);
+                plans = BuildImportPlans(
+                    selected,
+                    _remapDestination,
+                    destination,
+                    _groupTopLevelItems,
+                    groupFolderName);
             }
             catch (Exception ex)
             {
@@ -561,6 +642,9 @@ namespace JustUnitypackageImporter2Folder
                 (_remapDestination
                     ? $"保存先: {destination}"
                     : "保存先: UnityPackage内の設定に従います") +
+                (_groupTopLevelItems
+                    ? $"\nまとめ先フォルダ: {groupFolderName}"
+                    : "") +
                 "\n\n実行しますか？",
                 "インポート",
                 "キャンセル");
@@ -578,6 +662,8 @@ namespace JustUnitypackageImporter2Folder
                 _packagePath = "";
                 _entries.Clear();
                 _treeRoot = null;
+                _groupTopLevelItems = false;
+                _groupFolderName = "";
                 _loadError = "";
                 _scroll = Vector2.zero;
 
@@ -628,7 +714,9 @@ namespace JustUnitypackageImporter2Folder
         private static List<ImportPlan> BuildImportPlans(
             List<PackageEntry> selected,
             bool remap,
-            string destination)
+            string destination,
+            bool groupTopLevelItems,
+            string groupFolderName)
         {
             var plans = new List<ImportPlan>(selected.Count);
 
@@ -639,13 +727,22 @@ namespace JustUnitypackageImporter2Folder
                 if (!original.StartsWith("Assets", StringComparison.Ordinal))
                     throw new InvalidDataException($"Assets配下ではないpathnameには対応していません: {original}");
 
-                string target;
-                if (remap)
-                {
-                    string relative = original.Length == "Assets".Length
-                        ? ""
-                        : original.Substring("Assets".Length).TrimStart('/');
+                string relative = original.Length == "Assets".Length
+                    ? ""
+                    : original.Substring("Assets".Length).TrimStart('/');
 
+                string target;
+                if (groupTopLevelItems)
+                {
+                    string basePath = remap ? destination : "Assets";
+                    string groupRoot = basePath.TrimEnd('/') + "/" + groupFolderName;
+
+                    target = string.IsNullOrEmpty(relative)
+                        ? groupRoot
+                        : groupRoot + "/" + relative;
+                }
+                else if (remap)
+                {
                     target = string.IsNullOrEmpty(relative)
                         ? destination
                         : destination.TrimEnd('/') + "/" + relative;
@@ -662,6 +759,31 @@ namespace JustUnitypackageImporter2Folder
                 .OrderBy(x => x.Entry.IsDirectory ? 0 : 1)
                 .ThenBy(x => x.TargetPath.Count(c => c == '/'))
                 .ToList();
+        }
+
+        private static bool ValidateFolderName(
+            string input,
+            out string normalized,
+            out string error)
+        {
+            normalized = (input ?? "").Trim();
+            error = "";
+
+            if (string.IsNullOrEmpty(normalized))
+            {
+                error = "まとめ先フォルダ名を入力してください。";
+                return false;
+            }
+
+            if (normalized == "." || normalized == ".." ||
+                normalized.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+                normalized.Contains("/") || normalized.Contains("\\"))
+            {
+                error = "まとめ先フォルダ名に使用できない文字が含まれています。";
+                return false;
+            }
+
+            return true;
         }
 
         private static bool ValidateAssetFolder(string input, out string normalized, out string error)
