@@ -29,6 +29,14 @@ namespace JustUnitypackageImporter2Folder
         }
     }
 
+    internal sealed class UnityPackageReadCanceledException : OperationCanceledException
+    {
+        public UnityPackageReadCanceledException()
+            : base("UnityPackageの読み込みがユーザーによってキャンセルされました。")
+        {
+        }
+    }
+
     /// <summary>
     /// JustUnitypackageImporter2Folder (JUI)
     ///
@@ -538,7 +546,18 @@ namespace JustUnitypackageImporter2Folder
 
             try
             {
-                _entries = UnityPackageReader.Read(path, out PackageMetrics metrics)
+                long warningBytes = checked((long)_expandedSizeWarningMb * 1024L * 1024L);
+                _entries = UnityPackageReader.Read(
+                        path,
+                        warningBytes,
+                        estimatedBytes => EditorUtility.DisplayDialog(
+                            "JUI - 展開後サイズ警告",
+                            $"展開後サイズが警告値 {_expandedSizeWarningMb} MB を超えています。\n" +
+                            $"現在の推定展開後サイズ: {estimatedBytes / (1024d * 1024d):F1} MB\n\n" +
+                            "このままUnityPackageを読み込みますか？",
+                            "読み込みを続行",
+                            "キャンセル"),
+                        out PackageMetrics metrics)
                     .OrderBy(x => x.Pathname, StringComparer.OrdinalIgnoreCase)
                     .ToList();
                 _packageMetrics = metrics;
@@ -578,6 +597,18 @@ namespace JustUnitypackageImporter2Folder
                             : "トップレベル項目を元の構成のままImportします。");
                     }
                 }
+            }
+            catch (UnityPackageReadCanceledException)
+            {
+                _packagePath = "";
+                _entries.Clear();
+                _treeRoot = null;
+                _groupTopLevelItems = false;
+                _groupFolderName = "";
+                _packageMetrics = null;
+                _loadError = "";
+                _scroll = Vector2.zero;
+                JUILog.Info("展開後サイズ警告でUnityPackageの読み込みをキャンセルしました。");
             }
             catch (Exception ex)
             {
@@ -1149,6 +1180,8 @@ namespace JustUnitypackageImporter2Folder
 
         public static List<PackageEntry> Read(
             string unityPackagePath,
+            long expandedSizeWarningBytes,
+            Func<long, bool> confirmContinueAfterSizeWarning,
             out PackageMetrics metrics)
         {
             if (!File.Exists(unityPackagePath))
@@ -1157,47 +1190,63 @@ namespace JustUnitypackageImporter2Folder
             var groups = new Dictionary<string, RawGroup>(StringComparer.OrdinalIgnoreCase);
             long compressedBytes = new FileInfo(unityPackagePath).Length;
             long expandedBytes = 0;
+            bool sizeWarningHandled = false;
 
             using (FileStream fs = File.OpenRead(unityPackagePath))
             using (var gzip = new GZipStream(fs, CompressionMode.Decompress))
             {
-                TarReader.Read(gzip, (name, bytes, typeFlag) =>
-                {
-                    if (typeFlag == 0 || typeFlag == (byte)'0' || typeFlag == (byte)'7')
+                TarReader.Read(
+                    gzip,
+                    (name, bytes, typeFlag) =>
                     {
-                        checked { expandedBytes += bytes.LongLength; }
-                    }
+                        string normalized = name.Replace('\\', '/');
+                        while (normalized.StartsWith("./", StringComparison.Ordinal))
+                            normalized = normalized.Substring(2);
+                        normalized = normalized.TrimStart('/');
+                        string[] parts = normalized.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2)
+                            return;
 
-                    string normalized = name.Replace('\\', '/');
-                    while (normalized.StartsWith("./", StringComparison.Ordinal))
-                        normalized = normalized.Substring(2);
-                    normalized = normalized.TrimStart('/');
-                    string[] parts = normalized.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length < 2)
-                        return;
+                        string guid = parts[0];
+                        string leaf = parts[parts.Length - 1];
 
-                    string guid = parts[0];
-                    string leaf = parts[parts.Length - 1];
+                        if (!groups.TryGetValue(guid, out RawGroup group))
+                        {
+                            group = new RawGroup { Guid = guid };
+                            groups.Add(guid, group);
+                        }
 
-                    if (!groups.TryGetValue(guid, out RawGroup group))
+                        switch (leaf)
+                        {
+                            case "asset":
+                                group.Asset = bytes;
+                                break;
+                            case "asset.meta":
+                                group.Meta = bytes;
+                                break;
+                            case "pathname":
+                                group.Pathname = bytes;
+                                break;
+                        }
+                    },
+                    (name, size, typeFlag) =>
                     {
-                        group = new RawGroup { Guid = guid };
-                        groups.Add(guid, group);
-                    }
+                        if (!IsRegularTarFile(typeFlag))
+                            return true;
 
-                    switch (leaf)
-                    {
-                        case "asset":
-                            group.Asset = bytes;
-                            break;
-                        case "asset.meta":
-                            group.Meta = bytes;
-                            break;
-                        case "pathname":
-                            group.Pathname = bytes;
-                            break;
-                    }
-                });
+                        checked { expandedBytes += size; }
+
+                        if (!sizeWarningHandled && expandedBytes > expandedSizeWarningBytes)
+                        {
+                            sizeWarningHandled = true;
+                            bool continueReading = confirmContinueAfterSizeWarning == null ||
+                                confirmContinueAfterSizeWarning(expandedBytes);
+                            if (!continueReading)
+                                throw new UnityPackageReadCanceledException();
+                        }
+
+                        return true;
+                    });
             }
 
             metrics = new PackageMetrics(compressedBytes, expandedBytes);
@@ -1247,6 +1296,11 @@ namespace JustUnitypackageImporter2Folder
             }
 
             return result;
+        }
+
+        private static bool IsRegularTarFile(byte typeFlag)
+        {
+            return typeFlag == 0 || typeFlag == (byte)'0' || typeFlag == (byte)'7';
         }
 
         private static string DecodeText(byte[] bytes)
@@ -1916,7 +1970,10 @@ namespace JustUnitypackageImporter2Folder
     {
         private const int BlockSize = 512;
 
-        public static void Read(Stream stream, Action<string, byte[], byte> onEntry)
+        public static void Read(
+            Stream stream,
+            Action<string, byte[], byte> onEntry,
+            Func<string, long, byte, bool> onHeader = null)
         {
             byte[] header = new byte[BlockSize];
             string pendingLongName = null;
@@ -1937,7 +1994,24 @@ namespace JustUnitypackageImporter2Folder
                 long size = ParseOctal(header, 124, 12);
                 byte typeFlag = header[156];
 
-                if (size < 0 || size > int.MaxValue)
+                if (size < 0)
+                    throw new InvalidDataException($"不正なTARエントリサイズです: {size}");
+
+                bool isExtendedNameHeader = typeFlag == (byte)'L' || typeFlag == (byte)'x';
+                string name = !string.IsNullOrEmpty(pendingPaxPath)
+                    ? pendingPaxPath
+                    : !string.IsNullOrEmpty(pendingLongName)
+                        ? pendingLongName
+                        : headerName;
+
+                // Report the size before allocating or reading the entry payload.
+                if (!isExtendedNameHeader && onHeader != null &&
+                    !onHeader(name, size, typeFlag))
+                {
+                    return;
+                }
+
+                if (size > int.MaxValue)
                     throw new InvalidDataException($"未対応のTARエントリサイズです: {size}");
 
                 byte[] data = new byte[(int)size];
@@ -1965,12 +2039,6 @@ namespace JustUnitypackageImporter2Folder
                     pendingPaxPath = ReadPaxPath(data);
                     continue;
                 }
-
-                string name = !string.IsNullOrEmpty(pendingPaxPath)
-                    ? pendingPaxPath
-                    : !string.IsNullOrEmpty(pendingLongName)
-                        ? pendingLongName
-                        : headerName;
 
                 pendingLongName = null;
                 pendingPaxPath = null;
