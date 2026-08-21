@@ -4,6 +4,10 @@ JustUnitypackageImporter2Folder（JUI）は、`.unitypackage` 内のフォルダ
 
 Unity標準のUnityPackage Importを置き換えるものではありません。保存先の変更は、JUIウィンドウからインポートした場合にのみ適用されます。
 
+# JustUnitypackageImporter2Folder
+
+![JUI](./JUI.png)
+
 ## 主な機能
 
 - UnityPackageのインポート先を任意の `Assets` フォルダ配下へ変更
