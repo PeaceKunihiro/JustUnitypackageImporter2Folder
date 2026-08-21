@@ -15,6 +15,7 @@ Unity標準のUnityPackage Importを置き換えるものではありません�
 - 複数のトップレベル項目をPackage名のフォルダへまとめてImport
 - UnityPackage読込時に既存プロジェクトとのGUID競合を検査して自動除外
 - GNU LongLink、PAX、USTARを含む長いTARエントリ名に対応
+- UnityPackageの展開後サイズと圧縮倍率を解析して警告
 - ファイルまたはフォルダ単位でImport対象を選択
 - ツリーの一括展開・折りたたみ、全項目の一括選択・解除
 - デフォルトImport先をプロジェクト単位の `EditorUserSettings` に保存
@@ -235,6 +236,29 @@ UnityPackage解析では、通常のTAR `name` フィールドに加えて次の
 読み取った名前やUnityPackageの `pathname` は切り詰めず、指定したImport先へそのまま展開します。
 
 Import実行前に全出力パスを検査し、OSの上限、ファイル名単位の上限、使用できない文字などで展開不可能な場合はエラーとして停止します。Windowsの従来の260文字境界や、Unity上で互換性に注意が必要な非常に長いAssetパスは警告として表示し、詳細をUnity Consoleへ出力します。
+
+## 展開後サイズと圧縮倍率
+
+UnityPackageを読み込むと、TAR内の通常ファイルを合計した展開後サイズと、元の `.unitypackage` ファイルサイズに対する圧縮倍率を表示します。
+
+集計には原則として次のファイルを含みます。
+
+- `asset`
+- `asset.meta`
+- `pathname`
+- `preview.png`
+- その他、Package内部に存在する通常ファイル
+
+GNU LongLinkやPAXなど、次のエントリを解釈するための制御用拡張ヘッダーは展開後サイズへ含めません。
+
+初期警告値は次のとおりです。
+
+- 展開後サイズ: 512 MB
+- 圧縮倍率: 10倍
+
+いずれかが警告値以上の場合、JUI上へ赤色の注意文を表示し、Unity Consoleにも警告を出力します。両方が警告値以上の場合は、それぞれ独立した警告を表示します。
+
+警告値はJUI Settingsの「展開後サイズ警告値 (MB)」「展開倍率警告値 (倍)」で変更できます。設定は`EditorUserSettings`へ保存され、JUIを閉じた後もプロジェクト単位で保持されます。
 
 ## 対象外の機能
 

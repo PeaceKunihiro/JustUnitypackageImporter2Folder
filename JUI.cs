@@ -10,6 +10,25 @@ using UnityEngine;
 
 namespace JustUnitypackageImporter2Folder
 {
+    internal sealed class PackageMetrics
+    {
+        private const double BytesPerMegabyte = 1024d * 1024d;
+
+        public readonly long CompressedBytes;
+        public readonly long ExpandedBytes;
+
+        public double ExpandedMegabytes => ExpandedBytes / BytesPerMegabyte;
+        public double CompressionRatio => CompressedBytes > 0
+            ? (double)ExpandedBytes / CompressedBytes
+            : 0d;
+
+        public PackageMetrics(long compressedBytes, long expandedBytes)
+        {
+            CompressedBytes = compressedBytes;
+            ExpandedBytes = expandedBytes;
+        }
+    }
+
     /// <summary>
     /// JustUnitypackageImporter2Folder (JUI)
     ///
@@ -26,12 +45,17 @@ namespace JustUnitypackageImporter2Folder
     {
         private const string PrefDefaultDestination = "JUI.DefaultDestination";
         private const string PrefWarnStandardImport = "JUI.WarnStandardImport";
+        private const string PrefExpandedSizeWarningMb = "JUI.ExpandedSizeWarningMb";
+        private const string PrefCompressionRatioWarning = "JUI.CompressionRatioWarning";
 
         private string _packagePath = "";
         private string _destination = "Assets/JUIImport";
         private bool _remapDestination = true;
         private bool _groupTopLevelItems;
         private string _groupFolderName = "";
+        private int _expandedSizeWarningMb = 512;
+        private int _compressionRatioWarning = 10;
+        private PackageMetrics _packageMetrics;
         private Vector2 _scroll;
 
         private List<PackageEntry> _entries = new List<PackageEntry>();
@@ -49,6 +73,8 @@ namespace JustUnitypackageImporter2Folder
         private void OnEnable()
         {
             _destination = JUISettings.GetString(PrefDefaultDestination, "Assets/JUIImport");
+            _expandedSizeWarningMb = JUISettings.GetInt(PrefExpandedSizeWarningMb, 512);
+            _compressionRatioWarning = JUISettings.GetInt(PrefCompressionRatioWarning, 10);
         }
 
         private void OnGUI()
@@ -59,6 +85,7 @@ namespace JustUnitypackageImporter2Folder
 
             DrawPackagePicker();
             HandleDragAndDrop();
+            DrawPackageMetrics();
 
             EditorGUILayout.Space(6);
             using (new EditorGUI.DisabledScope(_entries.Count == 0))
@@ -122,6 +149,27 @@ namespace JustUnitypackageImporter2Folder
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.Space(4);
+            EditorGUILayout.LabelField("JUI Settings", EditorStyles.boldLabel);
+
+            EditorGUI.BeginChangeCheck();
+            int expandedSizeWarningMb = EditorGUILayout.IntField(
+                "展開後サイズ警告値 (MB)",
+                _expandedSizeWarningMb);
+            int compressionRatioWarning = EditorGUILayout.IntField(
+                "展開倍率警告値 (倍)",
+                _compressionRatioWarning);
+            if (EditorGUI.EndChangeCheck())
+            {
+                _expandedSizeWarningMb = Math.Max(1, expandedSizeWarningMb);
+                _compressionRatioWarning = Math.Max(1, compressionRatioWarning);
+                JUISettings.SetInt(PrefExpandedSizeWarningMb, _expandedSizeWarningMb);
+                JUISettings.SetInt(PrefCompressionRatioWarning, _compressionRatioWarning);
+                JUILog.Info(
+                    $"Package警告閾値を変更しました: " +
+                    $"展開後サイズ {_expandedSizeWarningMb} MB, 展開倍率 {_compressionRatioWarning} 倍");
+                LogPackageMetricWarnings();
+            }
+
             bool warn = JUISettings.GetBool(PrefWarnStandardImport, true);
             bool newWarn = EditorGUILayout.ToggleLeft(
                 "JUIを使用しないUnityPackage Import時に通知する",
@@ -182,12 +230,65 @@ namespace JustUnitypackageImporter2Folder
             _loadError = "";
             _groupTopLevelItems = false;
             _groupFolderName = "";
+            _packageMetrics = null;
             _scroll = Vector2.zero;
 
             JUILog.Info(string.IsNullOrEmpty(clearedPackagePath)
                 ? "UnityPackage入力をクリアしました。"
                 : $"UnityPackage入力をクリアしました: {clearedPackagePath}");
             Repaint();
+        }
+
+        private void DrawPackageMetrics()
+        {
+            if (_packageMetrics == null)
+                return;
+
+            EditorGUILayout.Space(4);
+            EditorGUILayout.LabelField(
+                $"展開後サイズ: {_packageMetrics.ExpandedMegabytes:F2} MB    " +
+                $"圧縮倍率: {_packageMetrics.CompressionRatio:F2} 倍");
+
+            var warningStyle = new GUIStyle(EditorStyles.label);
+            warningStyle.normal.textColor = new Color(1f, 0.28f, 0.22f, 1f);
+            warningStyle.fontStyle = FontStyle.Bold;
+            warningStyle.wordWrap = true;
+
+            if (_packageMetrics.ExpandedMegabytes >= _expandedSizeWarningMb)
+            {
+                EditorGUILayout.LabelField(
+                    $"⚠ 展開後サイズが警告値 {_expandedSizeWarningMb} MB以上です。" +
+                    $"（{_packageMetrics.ExpandedMegabytes:F2} MB）",
+                    warningStyle);
+            }
+
+            if (_packageMetrics.CompressionRatio >= _compressionRatioWarning)
+            {
+                EditorGUILayout.LabelField(
+                    $"⚠ 圧縮倍率が警告値 {_compressionRatioWarning} 倍以上です。" +
+                    $"（{_packageMetrics.CompressionRatio:F2} 倍）",
+                    warningStyle);
+            }
+        }
+
+        private void LogPackageMetricWarnings()
+        {
+            if (_packageMetrics == null)
+                return;
+
+            if (_packageMetrics.ExpandedMegabytes >= _expandedSizeWarningMb)
+            {
+                JUILog.Warning(
+                    $"[展開後サイズ警告] {_packageMetrics.ExpandedMegabytes:F2} MB " +
+                    $"(警告値: {_expandedSizeWarningMb} MB)");
+            }
+
+            if (_packageMetrics.CompressionRatio >= _compressionRatioWarning)
+            {
+                JUILog.Warning(
+                    $"[圧縮倍率警告] {_packageMetrics.CompressionRatio:F2} 倍 " +
+                    $"(警告値: {_compressionRatioWarning} 倍)");
+            }
         }
 
         private void HandleDragAndDrop()
@@ -433,12 +534,14 @@ namespace JustUnitypackageImporter2Folder
             _treeRoot = null;
             _groupTopLevelItems = false;
             _groupFolderName = Path.GetFileNameWithoutExtension(path);
+            _packageMetrics = null;
 
             try
             {
-                _entries = UnityPackageReader.Read(path)
+                _entries = UnityPackageReader.Read(path, out PackageMetrics metrics)
                     .OrderBy(x => x.Pathname, StringComparer.OrdinalIgnoreCase)
                     .ToList();
+                _packageMetrics = metrics;
                 int guidConflictCount = JUIConflictChecker.MarkGuidConflicts(_entries);
                 _treeRoot = PackageTreeNode.Build(_entries);
 
@@ -447,6 +550,10 @@ namespace JustUnitypackageImporter2Folder
                 else
                 {
                     JUILog.Info($"UnityPackageを読み込みました: {path} ({_entries.Count} 項目)");
+                    JUILog.Info(
+                        $"Packageサイズ: 展開後 {_packageMetrics.ExpandedMegabytes:F2} MB, " +
+                        $"圧縮倍率 {_packageMetrics.CompressionRatio:F2} 倍");
+                    LogPackageMetricWarnings();
 
                     if (guidConflictCount > 0)
                     {
@@ -477,6 +584,7 @@ namespace JustUnitypackageImporter2Folder
                 _entries.Clear();
                 _treeRoot = null;
                 _groupTopLevelItems = false;
+                _packageMetrics = null;
                 _loadError = "UnityPackageの解析に失敗しました。\n" + ex.Message;
                 JUILog.Error("UnityPackageの解析に失敗しました。", ex);
                 Debug.LogException(ex);
@@ -716,6 +824,7 @@ namespace JustUnitypackageImporter2Folder
                 _treeRoot = null;
                 _groupTopLevelItems = false;
                 _groupFolderName = "";
+                _packageMetrics = null;
                 _loadError = "";
                 _scroll = Vector2.zero;
 
@@ -1038,18 +1147,27 @@ namespace JustUnitypackageImporter2Folder
             public byte[] Pathname;
         }
 
-        public static List<PackageEntry> Read(string unityPackagePath)
+        public static List<PackageEntry> Read(
+            string unityPackagePath,
+            out PackageMetrics metrics)
         {
             if (!File.Exists(unityPackagePath))
                 throw new FileNotFoundException("UnityPackageが見つかりません。", unityPackagePath);
 
             var groups = new Dictionary<string, RawGroup>(StringComparer.OrdinalIgnoreCase);
+            long compressedBytes = new FileInfo(unityPackagePath).Length;
+            long expandedBytes = 0;
 
             using (FileStream fs = File.OpenRead(unityPackagePath))
             using (var gzip = new GZipStream(fs, CompressionMode.Decompress))
             {
                 TarReader.Read(gzip, (name, bytes, typeFlag) =>
                 {
+                    if (typeFlag == 0 || typeFlag == (byte)'0' || typeFlag == (byte)'7')
+                    {
+                        checked { expandedBytes += bytes.LongLength; }
+                    }
+
                     string normalized = name.Replace('\\', '/');
                     while (normalized.StartsWith("./", StringComparison.Ordinal))
                         normalized = normalized.Substring(2);
@@ -1081,6 +1199,8 @@ namespace JustUnitypackageImporter2Folder
                     }
                 });
             }
+
+            metrics = new PackageMetrics(compressedBytes, expandedBytes);
 
             var result = new List<PackageEntry>();
 
@@ -1730,6 +1850,19 @@ namespace JustUnitypackageImporter2Folder
         {
             EditorUserSettings.SetConfigValue(key, value.ToString());
         }
+
+        public static int GetInt(string key, int defaultValue)
+        {
+            string value = EditorUserSettings.GetConfigValue(key);
+            return int.TryParse(value, out int parsed) && parsed > 0
+                ? parsed
+                : defaultValue;
+        }
+
+        public static void SetInt(string key, int value)
+        {
+            EditorUserSettings.SetConfigValue(key, Math.Max(1, value).ToString());
+        }
     }
 
     /// <summary>
@@ -1842,8 +1975,9 @@ namespace JustUnitypackageImporter2Folder
                 pendingLongName = null;
                 pendingPaxPath = null;
 
-                // '0' or NUL = regular file. '5' = directory.
-                if (typeFlag == 0 || typeFlag == (byte)'0' || typeFlag == (byte)'5')
+                // '0' or NUL = regular file. '7' = contiguous file. '5' = directory.
+                if (typeFlag == 0 || typeFlag == (byte)'0' ||
+                    typeFlag == (byte)'7' || typeFlag == (byte)'5')
                     onEntry(name, data, typeFlag);
             }
         }
