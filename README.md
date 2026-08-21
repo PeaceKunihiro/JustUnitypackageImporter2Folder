@@ -9,6 +9,7 @@ Unity標準のUnityPackage Importを置き換えるものではありません�
 - UnityPackageのインポート先を任意の `Assets` フォルダ配下へ変更
 - UnityPackage内のAssetをツリー形式・罫線付きで事前表示
 - 複数のトップレベル項目をPackage名のフォルダへまとめてImport
+- UnityPackage読込時に既存プロジェクトとのGUID競合を検査して自動除外
 - ファイルまたはフォルダ単位でImport対象を選択
 - ツリーの一括展開・折りたたみ、全項目の一括選択・解除
 - デフォルトImport先を `EditorPrefs` に保存
@@ -56,6 +57,20 @@ Unity標準のUnityPackage Importを置き換えるものではありません�
 8. 競合警告と最終確認を確認してImportを実行します。
 
 Importが正常に完了すると、UnityPackage入力欄と内容一覧はクリアされます。
+
+### UnityPackageの入力とクリア
+
+D&D領域は通常時に暗色で表示され、有効な `.unitypackage` を領域上へドラッグしている間は明るい色へ変化します。対応していないファイルは受け付けません。
+
+UnityPackage入力欄の「クリア」を押すと、次の読込状態を手動で初期化できます。
+
+- UnityPackageの入力パス
+- Import内容一覧
+- 読み込みエラー
+- トップレベル項目のまとめ設定とフォルダ名
+- 一覧のスクロール位置
+
+Import先と保存済みのDefault設定はクリアされません。クリア操作はUnity Consoleにも記録されます。
 
 ## Import先の変更
 
@@ -191,6 +206,18 @@ JUIによる次の操作や警告は、`[JUI]` プレフィックス付きでUni
 JUIはUnityPackage内の `asset.meta` を維持して配置し、Prefab、Material、TextureなどのGUIDベースの参照関係を可能な限り保持します。
 
 Import前には、同名ファイルやファイル／フォルダの種別競合に加え、既存Assetと異なるパスで同じGUIDが使用されるケースを警告します。
+
+### 読込時のGUID競合検査
+
+UnityPackageをJUIへ追加した時点で、各ファイルの `.meta` GUIDを現在のプロジェクトと照合します。既存AssetとGUIDが競合したファイルは、誤ってImportされないよう次の状態になります。
+
+- Import対象のチェックを自動的に解除
+- ツリーの該当行を薄い黄色でハイライト
+- ファイル名の先頭に警告記号 `⚠` を表示
+- マウスオーバー時に競合している既存Assetのパスを表示
+- Package内パス、GUID、既存AssetパスをUnity Consoleへ警告出力
+
+自動除外されたファイルは、内容を確認したうえで手動による再選択も可能です。
 
 ## 対象外の機能
 

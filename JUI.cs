@@ -163,7 +163,31 @@ namespace JustUnitypackageImporter2Folder
                     LoadPackage(path);
             }
 
+            using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_packagePath) && _entries.Count == 0))
+            {
+                if (GUILayout.Button("クリア", GUILayout.Width(64)))
+                    ClearPackageInput();
+            }
+
             EditorGUILayout.EndHorizontal();
+        }
+
+        private void ClearPackageInput()
+        {
+            string clearedPackagePath = _packagePath;
+
+            _packagePath = "";
+            _entries.Clear();
+            _treeRoot = null;
+            _loadError = "";
+            _groupTopLevelItems = false;
+            _groupFolderName = "";
+            _scroll = Vector2.zero;
+
+            JUILog.Info(string.IsNullOrEmpty(clearedPackagePath)
+                ? "UnityPackage入力をクリアしました。"
+                : $"UnityPackage入力をクリアしました: {clearedPackagePath}");
+            Repaint();
         }
 
         private void HandleDragAndDrop()
@@ -271,6 +295,20 @@ namespace JustUnitypackageImporter2Folder
                 EditorGUIUtility.singleLineHeight,
                 GUILayout.Width(depth * 16f));
 
+            bool hasGuidConflict = !isFolder && node.Entry != null && node.Entry.HasGuidConflict;
+            if (hasGuidConflict && Event.current.type == EventType.Repaint)
+            {
+                Color highlightColor = EditorGUIUtility.isProSkin
+                    ? new Color(1f, 0.78f, 0.18f, 0.18f)
+                    : new Color(1f, 0.82f, 0.24f, 0.32f);
+                float highlightWidth = Math.Max(
+                    0f,
+                    EditorGUIUtility.currentViewWidth - indentRect.x - 24f);
+                EditorGUI.DrawRect(
+                    new Rect(indentRect.x, indentRect.y, highlightWidth, indentRect.height),
+                    highlightColor);
+            }
+
             if (isFolder)
             {
                 List<PackageEntry> entries = node.GetEntriesRecursive().ToList();
@@ -296,7 +334,12 @@ namespace JustUnitypackageImporter2Folder
                 bool selected = EditorGUILayout.Toggle(entry.Selected, GUILayout.Width(18));
                 if (selected != entry.Selected)
                     entry.Selected = selected;
-                EditorGUILayout.LabelField(node.Name, EditorStyles.label);
+                var label = new GUIContent(
+                    hasGuidConflict ? "⚠ " + node.Name : node.Name,
+                    hasGuidConflict
+                        ? "GUID競合: " + entry.GuidConflictPath
+                        : "");
+                EditorGUILayout.LabelField(label, EditorStyles.label);
             }
 
             EditorGUILayout.EndHorizontal();
@@ -395,6 +438,7 @@ namespace JustUnitypackageImporter2Folder
                 _entries = UnityPackageReader.Read(path)
                     .OrderBy(x => x.Pathname, StringComparer.OrdinalIgnoreCase)
                     .ToList();
+                int guidConflictCount = JUIConflictChecker.MarkGuidConflicts(_entries);
                 _treeRoot = PackageTreeNode.Build(_entries);
 
                 if (_entries.Count == 0)
@@ -402,6 +446,12 @@ namespace JustUnitypackageImporter2Folder
                 else
                 {
                     JUILog.Info($"UnityPackageを読み込みました: {path} ({_entries.Count} 項目)");
+
+                    if (guidConflictCount > 0)
+                    {
+                        JUILog.Warning(
+                            $"GUID競合のため {guidConflictCount} ファイルをImport対象から除外しました。");
+                    }
 
                     int topLevelCount = _treeRoot.Children.Count;
                     if (topLevelCount >= 2)
@@ -926,6 +976,8 @@ namespace JustUnitypackageImporter2Folder
         public byte[] MetaBytes;
         public bool IsDirectory;
         public bool Selected = true;
+        public bool HasGuidConflict;
+        public string GuidConflictPath;
     }
 
     internal sealed class ImportPlan
@@ -1042,6 +1094,40 @@ namespace JustUnitypackageImporter2Folder
 
     internal static class JUIConflictChecker
     {
+        public static int MarkGuidConflicts(IEnumerable<PackageEntry> entries)
+        {
+            int conflictCount = 0;
+
+            foreach (PackageEntry entry in entries)
+            {
+                entry.HasGuidConflict = false;
+                entry.GuidConflictPath = "";
+
+                if (entry.IsDirectory || entry.MetaBytes == null)
+                    continue;
+
+                string packageGuid = ExtractGuidFromMeta(entry.MetaBytes);
+                if (string.IsNullOrEmpty(packageGuid))
+                    continue;
+
+                string existingPath = AssetDatabase.GUIDToAssetPath(packageGuid);
+                if (string.IsNullOrEmpty(existingPath))
+                    continue;
+
+                entry.HasGuidConflict = true;
+                entry.GuidConflictPath = JUIWindow.NormalizeAssetPath(existingPath);
+                entry.Selected = false;
+                conflictCount++;
+
+                JUILog.Warning(
+                    $"[GUID競合・自動除外] {entry.Pathname}\n" +
+                    $"  GUID: {packageGuid}\n" +
+                    $"  既存: {entry.GuidConflictPath}");
+            }
+
+            return conflictCount;
+        }
+
         public static List<string> Check(List<ImportPlan> plans)
         {
             var warnings = new List<string>();
@@ -1095,7 +1181,7 @@ namespace JustUnitypackageImporter2Folder
             return warnings.Distinct().ToList();
         }
 
-        private static string ExtractGuidFromMeta(byte[] metaBytes)
+        internal static string ExtractGuidFromMeta(byte[] metaBytes)
         {
             string text = Encoding.UTF8.GetString(metaBytes);
             using (var reader = new StringReader(text))
