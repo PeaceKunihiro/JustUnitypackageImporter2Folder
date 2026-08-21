@@ -48,7 +48,7 @@ namespace JustUnitypackageImporter2Folder
 
         private void OnEnable()
         {
-            _destination = EditorPrefs.GetString(PrefDefaultDestination, "Assets/JUIImport");
+            _destination = JUISettings.GetString(PrefDefaultDestination, "Assets/JUIImport");
         }
 
         private void OnGUI()
@@ -80,7 +80,7 @@ namespace JustUnitypackageImporter2Folder
                         if (ValidateAssetFolder(_destination, out string normalized, out string error))
                         {
                             _destination = normalized;
-                            EditorPrefs.SetString(PrefDefaultDestination, _destination);
+                            JUISettings.SetString(PrefDefaultDestination, _destination);
                             JUILog.Info($"Defaultインポート先を保存しました: {_destination}");
                             ShowNotification(new GUIContent("Defaultを保存しました"));
                         }
@@ -92,7 +92,7 @@ namespace JustUnitypackageImporter2Folder
 
                     if (GUILayout.Button("Defaultを読込", GUILayout.Width(110)))
                     {
-                        _destination = EditorPrefs.GetString(PrefDefaultDestination, "Assets/JUIImport");
+                        _destination = JUISettings.GetString(PrefDefaultDestination, "Assets/JUIImport");
                         JUILog.Info($"Defaultインポート先を読み込みました: {_destination}");
                     }
                     EditorGUILayout.EndHorizontal();
@@ -122,13 +122,13 @@ namespace JustUnitypackageImporter2Folder
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.Space(4);
-            bool warn = EditorPrefs.GetBool(PrefWarnStandardImport, true);
+            bool warn = JUISettings.GetBool(PrefWarnStandardImport, true);
             bool newWarn = EditorGUILayout.ToggleLeft(
                 "JUIを使用しないUnityPackage Import時に通知する",
                 warn);
             if (newWarn != warn)
             {
-                EditorPrefs.SetBool(PrefWarnStandardImport, newWarn);
+                JUISettings.SetBool(PrefWarnStandardImport, newWarn);
                 JUILog.Info($"通常UnityPackage Import時の通知を{(newWarn ? "有効" : "無効")}にしました。");
             }
 
@@ -277,6 +277,7 @@ namespace JustUnitypackageImporter2Folder
             if (_treeRoot == null)
                 _treeRoot = PackageTreeNode.Build(_entries);
 
+            _treeRoot.UpdateSelectionCounts();
             DrawTreeNode(_treeRoot, 0, new List<bool>(), true);
 
             EditorGUILayout.EndScrollView();
@@ -311,9 +312,9 @@ namespace JustUnitypackageImporter2Folder
 
             if (isFolder)
             {
-                List<PackageEntry> entries = node.GetEntriesRecursive().ToList();
-                bool anySelected = entries.Any(x => x.Selected);
-                bool allSelected = entries.Count > 0 && entries.All(x => x.Selected);
+                bool anySelected = node.SelectedEntryCount > 0;
+                bool allSelected = node.TotalEntryCount > 0 &&
+                    node.SelectedEntryCount == node.TotalEntryCount;
 
                 EditorGUI.showMixedValue = anySelected && !allSelected;
                 EditorGUI.BeginChangeCheck();
@@ -542,21 +543,6 @@ namespace JustUnitypackageImporter2Folder
                 JUILog.Error("バックアップからの復元に失敗しました。", ex);
                 Debug.LogException(ex);
                 EditorUtility.DisplayDialog("JUI", "復元中にエラーが発生しました。\n\n" + ex.Message, "OK");
-            }
-        }
-
-        private void ToggleEntry(PackageEntry entry, bool value)
-        {
-            entry.Selected = value;
-
-            if (!entry.IsDirectory)
-                return;
-
-            string prefix = entry.Pathname.TrimEnd('/') + "/";
-            foreach (PackageEntry child in _entries)
-            {
-                if (child.Pathname.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    child.Selected = value;
             }
         }
 
@@ -802,7 +788,9 @@ namespace JustUnitypackageImporter2Folder
                     target = original;
                 }
 
-                plans.Add(new ImportPlan(entry, NormalizeAssetPath(target)));
+                string normalizedTarget = NormalizeAssetPath(target);
+                ResolveAssetPathOrThrow(normalizedTarget);
+                plans.Add(new ImportPlan(entry, normalizedTarget));
             }
 
             return plans
@@ -895,6 +883,18 @@ namespace JustUnitypackageImporter2Folder
                    candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
                    candidate.StartsWith(root + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
         }
+
+        internal static string ResolveAssetPathOrThrow(string assetPath)
+        {
+            string projectRoot = ProjectRoot;
+            string assetsRoot = Path.GetFullPath(Path.Combine(projectRoot, "Assets"));
+            string absolute = Path.GetFullPath(Path.Combine(projectRoot, assetPath));
+
+            if (!IsPathInside(absolute, assetsRoot))
+                throw new InvalidOperationException($"Assets外のパスを拒否しました: {assetPath}");
+
+            return absolute;
+        }
     }
 
     internal sealed class PackageTreeNode
@@ -904,6 +904,8 @@ namespace JustUnitypackageImporter2Folder
         public readonly List<PackageTreeNode> Children = new List<PackageTreeNode>();
         public PackageEntry Entry;
         public bool Expanded = true;
+        public int TotalEntryCount { get; private set; }
+        public int SelectedEntryCount { get; private set; }
 
         public bool IsFolder => Children.Count > 0 || (Entry != null && Entry.IsDirectory);
 
@@ -964,6 +966,19 @@ namespace JustUnitypackageImporter2Folder
             {
                 foreach (PackageEntry entry in child.GetEntriesRecursive())
                     yield return entry;
+            }
+        }
+
+        public void UpdateSelectionCounts()
+        {
+            TotalEntryCount = Entry == null ? 0 : 1;
+            SelectedEntryCount = Entry != null && Entry.Selected ? 1 : 0;
+
+            foreach (PackageTreeNode child in Children)
+            {
+                child.UpdateSelectionCounts();
+                TotalEntryCount += child.TotalEntryCount;
+                SelectedEntryCount += child.SelectedEntryCount;
             }
         }
     }
@@ -1068,6 +1083,17 @@ namespace JustUnitypackageImporter2Folder
                 if (!(pathname == "Assets" || pathname.StartsWith("Assets/", StringComparison.Ordinal)))
                     continue;
 
+                try
+                {
+                    JUIWindow.ResolveAssetPathOrThrow(pathname);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidDataException(
+                        $"Assets外を指す不正なpathnameを検出しました: {pathname}",
+                        ex);
+                }
+
                 bool isDirectory = group.Asset == null;
 
                 result.Add(new PackageEntry
@@ -1131,17 +1157,10 @@ namespace JustUnitypackageImporter2Folder
         public static List<string> Check(List<ImportPlan> plans)
         {
             var warnings = new List<string>();
-            string projectRoot = JUIWindow.ProjectRoot;
 
             foreach (ImportPlan plan in plans)
             {
-                string absolute = Path.GetFullPath(Path.Combine(projectRoot, plan.TargetPath));
-
-                if (!JUIWindow.IsPathInside(absolute, Path.Combine(projectRoot, "Assets")))
-                {
-                    warnings.Add($"[危険] Assets外への出力: {plan.TargetPath}");
-                    continue;
-                }
+                string absolute = JUIWindow.ResolveAssetPathOrThrow(plan.TargetPath);
 
                 if (plan.Entry.IsDirectory)
                 {
@@ -1203,12 +1222,11 @@ namespace JustUnitypackageImporter2Folder
     {
         public static List<string> GetOverwritePaths(List<ImportPlan> plans)
         {
-            string projectRoot = JUIWindow.ProjectRoot;
             var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (ImportPlan plan in plans)
             {
-                string absolute = Path.GetFullPath(Path.Combine(projectRoot, plan.TargetPath));
+                string absolute = JUIWindow.ResolveAssetPathOrThrow(plan.TargetPath);
 
                 if (!plan.Entry.IsDirectory && File.Exists(absolute))
                     paths.Add(JUIWindow.NormalizeAssetPath(plan.TargetPath));
@@ -1223,23 +1241,21 @@ namespace JustUnitypackageImporter2Folder
 
         public static string Execute(List<ImportPlan> plans, bool createBackup)
         {
-            string projectRoot = JUIWindow.ProjectRoot;
             List<string> overwritePaths = GetOverwritePaths(plans);
             string backupDirectory = createBackup
                 ? JUIBackupManager.Create(overwritePaths)
                 : "";
+            ImportTransaction transaction = ImportTransaction.Prepare(plans);
+            bool assetEditingStarted = false;
 
             try
             {
                 AssetDatabase.StartAssetEditing();
+                assetEditingStarted = true;
 
                 foreach (ImportPlan plan in plans)
                 {
-                    string absolute = Path.GetFullPath(Path.Combine(projectRoot, plan.TargetPath));
-                    string assetsRoot = Path.GetFullPath(Path.Combine(projectRoot, "Assets"));
-
-                    if (!JUIWindow.IsPathInside(absolute, assetsRoot))
-                        throw new InvalidOperationException($"Assets外への書き込みを拒否しました: {plan.TargetPath}");
+                    string absolute = JUIWindow.ResolveAssetPathOrThrow(plan.TargetPath);
 
                     if (plan.Entry.IsDirectory)
                     {
@@ -1269,13 +1285,190 @@ namespace JustUnitypackageImporter2Folder
                             File.WriteAllBytes(absolute + ".meta", plan.Entry.MetaBytes);
                     }
                 }
-            }
-            finally
-            {
+
                 AssetDatabase.StopAssetEditing();
+                assetEditingStarted = false;
+                transaction.Commit();
+            }
+            catch (Exception importException)
+            {
+                if (assetEditingStarted)
+                {
+                    try
+                    {
+                        AssetDatabase.StopAssetEditing();
+                    }
+                    catch (Exception stopException)
+                    {
+                        JUILog.Error("AssetDatabaseの編集終了処理に失敗しました。", stopException);
+                    }
+                    finally
+                    {
+                        assetEditingStarted = false;
+                    }
+                }
+
+                try
+                {
+                    transaction.Rollback();
+                    JUILog.Warning("Import中のエラーにより、ファイル変更をロールバックしました。");
+                }
+                catch (Exception rollbackException)
+                {
+                    throw new AggregateException(
+                        "Importに失敗し、ロールバックも完了できませんでした。",
+                        importException,
+                        rollbackException);
+                }
+
+                throw;
             }
 
             return backupDirectory;
+        }
+
+        private sealed class ImportTransaction
+        {
+            private readonly string _projectRoot;
+            private readonly string _transactionRoot;
+            private readonly List<string> _existingFiles;
+            private readonly List<string> _newFiles;
+            private readonly List<string> _newDirectories;
+
+            private ImportTransaction(
+                string projectRoot,
+                string transactionRoot,
+                List<string> existingFiles,
+                List<string> newFiles,
+                List<string> newDirectories)
+            {
+                _projectRoot = projectRoot;
+                _transactionRoot = transactionRoot;
+                _existingFiles = existingFiles;
+                _newFiles = newFiles;
+                _newDirectories = newDirectories;
+            }
+
+            public static ImportTransaction Prepare(List<ImportPlan> plans)
+            {
+                string projectRoot = JUIWindow.ProjectRoot;
+                string transactionRoot = Path.Combine(
+                    JUIBackupManager.BackupRoot,
+                    ".transaction_" + Guid.NewGuid().ToString("N"));
+                var writeTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var newDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (ImportPlan plan in plans)
+                {
+                    string absolute = JUIWindow.ResolveAssetPathOrThrow(plan.TargetPath);
+
+                    if (plan.Entry.IsDirectory)
+                    {
+                        AddMissingDirectories(absolute, newDirectories);
+                    }
+                    else
+                    {
+                        writeTargets.Add(absolute);
+                        AddMissingDirectories(Path.GetDirectoryName(absolute), newDirectories);
+                    }
+
+                    if (plan.Entry.MetaBytes != null)
+                        writeTargets.Add(absolute + ".meta");
+                }
+
+                var existingFiles = new List<string>();
+                var newFiles = new List<string>();
+
+                foreach (string target in writeTargets)
+                {
+                    if (!JUIWindow.IsPathInside(target, Path.Combine(projectRoot, "Assets")))
+                        throw new InvalidOperationException($"Assets外のTransaction対象を拒否しました: {target}");
+
+                    if (File.Exists(target))
+                    {
+                        string relative = target.Substring(projectRoot.Length)
+                            .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        string backup = Path.Combine(transactionRoot, relative);
+                        string parent = Path.GetDirectoryName(backup);
+                        if (!string.IsNullOrEmpty(parent))
+                            Directory.CreateDirectory(parent);
+                        File.Copy(target, backup, false);
+                        existingFiles.Add(target);
+                    }
+                    else
+                    {
+                        newFiles.Add(target);
+                    }
+                }
+
+                return new ImportTransaction(
+                    projectRoot,
+                    transactionRoot,
+                    existingFiles,
+                    newFiles,
+                    newDirectories
+                        .OrderByDescending(x => x.Length)
+                        .ToList());
+            }
+
+            public void Commit()
+            {
+                DeleteTransactionDirectory();
+            }
+
+            public void Rollback()
+            {
+                foreach (string path in _newFiles)
+                {
+                    if (File.Exists(path))
+                        File.Delete(path);
+                }
+
+                foreach (string original in _existingFiles)
+                {
+                    string relative = original.Substring(_projectRoot.Length)
+                        .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    string backup = Path.Combine(_transactionRoot, relative);
+                    string parent = Path.GetDirectoryName(original);
+                    if (!string.IsNullOrEmpty(parent))
+                        Directory.CreateDirectory(parent);
+                    File.Copy(backup, original, true);
+                }
+
+                foreach (string directory in _newDirectories)
+                {
+                    if (Directory.Exists(directory) &&
+                        !Directory.EnumerateFileSystemEntries(directory).Any())
+                    {
+                        Directory.Delete(directory, false);
+                    }
+                }
+
+                DeleteTransactionDirectory();
+            }
+
+            private static void AddMissingDirectories(
+                string directory,
+                HashSet<string> newDirectories)
+            {
+                string assetsRoot = Path.GetFullPath(
+                    Path.Combine(JUIWindow.ProjectRoot, "Assets"));
+
+                while (!string.IsNullOrEmpty(directory) &&
+                       JUIWindow.IsPathInside(directory, assetsRoot) &&
+                       !directory.Equals(assetsRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!Directory.Exists(directory))
+                        newDirectories.Add(directory);
+                    directory = Path.GetDirectoryName(directory);
+                }
+            }
+
+            private void DeleteTransactionDirectory()
+            {
+                if (Directory.Exists(_transactionRoot))
+                    Directory.Delete(_transactionRoot, true);
+            }
         }
     }
 
@@ -1389,6 +1582,31 @@ namespace JustUnitypackageImporter2Folder
         }
     }
 
+    internal static class JUISettings
+    {
+        public static string GetString(string key, string defaultValue)
+        {
+            string value = EditorUserSettings.GetConfigValue(key);
+            return string.IsNullOrEmpty(value) ? defaultValue : value;
+        }
+
+        public static void SetString(string key, string value)
+        {
+            EditorUserSettings.SetConfigValue(key, value ?? "");
+        }
+
+        public static bool GetBool(string key, bool defaultValue)
+        {
+            string value = EditorUserSettings.GetConfigValue(key);
+            return bool.TryParse(value, out bool parsed) ? parsed : defaultValue;
+        }
+
+        public static void SetBool(string key, bool value)
+        {
+            EditorUserSettings.SetConfigValue(key, value.ToString());
+        }
+    }
+
     /// <summary>
     /// Warns when a normal UnityPackage import is started outside JUI.
     /// JUI itself uses direct extraction + AssetDatabase.Refresh(), so its own
@@ -1407,7 +1625,7 @@ namespace JustUnitypackageImporter2Folder
 
         private static void OnImportPackageStarted(string packageName)
         {
-            if (!EditorPrefs.GetBool(PrefWarnStandardImport, true))
+            if (!JUISettings.GetBool(PrefWarnStandardImport, true))
                 return;
 
             if (_dialogQueued)

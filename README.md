@@ -16,7 +16,7 @@ Unity標準のUnityPackage Importを置き換えるものではありません�
 - UnityPackage読込時に既存プロジェクトとのGUID競合を検査して自動除外
 - ファイルまたはフォルダ単位でImport対象を選択
 - ツリーの一括展開・折りたたみ、全項目の一括選択・解除
-- デフォルトImport先を `EditorPrefs` に保存
+- デフォルトImport先をプロジェクト単位の `EditorUserSettings` に保存
 - 同名ファイル、ファイル／フォルダの種別競合、GUID競合を確認
 - 上書き前のファイルを `JUI_BAK` へバックアップ
 - バックアップから上書き前の状態へ復元
@@ -130,7 +130,7 @@ Import先/
 
 「現在の場所をDefaultに設定」を押すと、現在のImport先を保存できます。「Defaultを読込」で保存済みの場所を再設定します。
 
-保存にはUnityの `EditorPrefs` を使用するため、Unity Editorを終了した後も設定が保持されます。
+保存にはUnityの `EditorUserSettings` を使用するため、Unity Editorを終了した後もプロジェクト単位で設定が保持されます。他のUnityプロジェクトとは共有されません。
 
 ## Import内容の選択
 

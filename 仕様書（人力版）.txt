@@ -60,4 +60,21 @@ UniypackageがJUIに追加された時に、GUIDが競合していないか調�
 JUIに入力クリアボタンを追加
 
 
-
+主な修正:
+- Default Import先と通常Import通知設定をEditorPrefsからプロジェクト単位のEditorUserSettingsへ変更
+- UnityPackage読込時に不正なpathnameを検出し、Assets外を指すPackageを拒否
+- Import計画、競合検査、上書き検査、実書き込みの各段階でAssets外パスを強制拒否
+- Import処理に内部トランザクションを追加
+  - 上書き前ファイルを一時退避
+  - 失敗時に既存ファイルを復元
+  - 失敗時に新規作成ファイルと空フォルダを削除
+  - 成功時に一時データを削除
+- 未使用だったToggleEntryを削除
+- ツリー選択状態を毎フレーム何度も列挙せず、一度の集計で描画するよう軽量化
+- READMEとSpecificationの設定保存方式を更新
+以下は明示済み仕様と衝突するため維持しました。
+- フォルダ名が10文字以上の場合の注意表示
+- GUID競合ファイルの自動チェック解除
+  READMEには手動で再選択可能であることを記載済みです。
+- TARのGNU long name/PAX対応は、現行UnityPackageでは実害がほぼないため未追加
+git diff --checkは問題ありません。Unity付属コンパイラの直接実行は、コンパイラ側の依存アセンブリ読込エラーにより完了できなかったため、Unity Editor上での最終コンパイル確認が必要です。

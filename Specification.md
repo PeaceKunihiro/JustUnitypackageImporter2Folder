@@ -147,12 +147,9 @@ Assets/_JUIImport/
 
 設定値はUnity Editor終了後も保持する。
 
-保存方法は以下を候補とする。
+保存には `EditorUserSettings` を使用する。
 
-* `EditorPrefs`
-* JUI専用Settings Asset
-
-初期版では `EditorPrefs` でも十分とする。
+設定値はプロジェクト単位で保持し、別のUnityプロジェクトへ同じImport先や通知設定を引き継がない。
 
 ---
 
