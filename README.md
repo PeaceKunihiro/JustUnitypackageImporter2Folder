@@ -36,7 +36,7 @@ Unity標準のUnityPackage Importを置き換えるものではありません�
 > UPM PackageのImport先変更には対応していません。
 
 ## インストール
-
+**手動追加**
 1. Unityプロジェクト内に次のフォルダを作成します。
 
    ```text
@@ -50,6 +50,17 @@ Unity標準のUnityPackage Importを置き換えるものではありません�
    ```
 
 3. Unityによるスクリプトのコンパイル完了後、メニューに `Tools > JUI` が追加されます。
+
+**Uniypackage版による追加**
+1. Uniypackagesフォルダから最新のUniypackageを取得します。
+　例
+   ```
+   JustUnitypackageImporter2Folder_v0.1.unitypackage
+   ```
+2. 導入するUnityプロジェクトでUniypackageを起動します。
+>[!NOTE]
+>Uniypackage版のフォルダ階層は以下となっています。
+>PeaceKunihiro>Tools>JUI
 
 ## 基本的な使い方
 
@@ -291,4 +302,10 @@ GNU LongLinkやPAXなど、次のエントリを解釈するための制御用�
 
 - `JUI.cs` — Unity Editor拡張本体
 - `Specification.md` — 暫定仕様書
+- `UPDATELOG.md` — 更新履歴
 - `仕様書（人力版）.txt` — 機能概要と更新記録
+- `license.txt` - MITライセンスファイル
+
+# Lisence
+
+This project is licensed under the MIT License, see the LICENSE.txt file for details
