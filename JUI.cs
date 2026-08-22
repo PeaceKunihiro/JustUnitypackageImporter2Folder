@@ -10,6 +10,19 @@ using UnityEngine;
 
 namespace JustUnitypackageImporter2Folder
 {
+    [Serializable]
+    internal sealed class DestinationPreset
+    {
+        public string DisplayName = "";
+        public string DestinationPath = "Assets/JUIImport";
+    }
+
+    [Serializable]
+    internal sealed class DestinationPresetCollection
+    {
+        public List<DestinationPreset> Items = new List<DestinationPreset>();
+    }
+
     internal sealed class PackageMetrics
     {
         private const double BytesPerMegabyte = 1024d * 1024d;
@@ -55,6 +68,7 @@ namespace JustUnitypackageImporter2Folder
         private const string PrefWarnStandardImport = "JUI.WarnStandardImport";
         private const string PrefExpandedSizeWarningMb = "JUI.ExpandedSizeWarningMb";
         private const string PrefCompressionRatioWarning = "JUI.CompressionRatioWarning";
+        private const string PrefDestinationPresets = "JUI.DestinationPresets";
 
         private string _packagePath = "";
         private string _destination = "Assets/JUIImport";
@@ -64,6 +78,10 @@ namespace JustUnitypackageImporter2Folder
         private int _expandedSizeWarningMb = 512;
         private int _compressionRatioWarning = 10;
         private PackageMetrics _packageMetrics;
+        private List<DestinationPreset> _destinationPresets = new List<DestinationPreset>();
+        private int _selectedPresetIndex = -1;
+        private bool _showPresetEditor;
+        private Vector2 _presetScroll;
         private Vector2 _scroll;
 
         private List<PackageEntry> _entries = new List<PackageEntry>();
@@ -83,6 +101,7 @@ namespace JustUnitypackageImporter2Folder
             _destination = JUISettings.GetString(PrefDefaultDestination, "Assets/JUIImport");
             _expandedSizeWarningMb = JUISettings.GetInt(PrefExpandedSizeWarningMb, 512);
             _compressionRatioWarning = JUISettings.GetInt(PrefCompressionRatioWarning, 10);
+            LoadDestinationPresets();
         }
 
         private void OnGUI()
@@ -148,6 +167,8 @@ namespace JustUnitypackageImporter2Folder
                 }
             }
 
+            DrawDestinationPresets();
+
             EditorGUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
             if (GUILayout.Button("バックアップフォルダを開く", GUILayout.Width(180)))
@@ -195,13 +216,6 @@ namespace JustUnitypackageImporter2Folder
 
             DrawEntryList();
 
-            EditorGUILayout.Space(6);
-
-            using (new EditorGUI.DisabledScope(_entries.Count == 0))
-            {
-                if (GUILayout.Button("これでインポートする", GUILayout.Height(34)))
-                    ImportSelected();
-            }
         }
 
         private void DrawPackagePicker()
@@ -225,7 +239,44 @@ namespace JustUnitypackageImporter2Folder
                     ClearPackageInput();
             }
 
+            bool canImport = CanImport();
+            Color previousBackgroundColor = GUI.backgroundColor;
+            if (canImport)
+                GUI.backgroundColor = new Color(0.22f, 0.52f, 1f, 1f);
+
+            using (new EditorGUI.DisabledScope(!canImport))
+            {
+                if (GUILayout.Button("これでインポートする", GUILayout.Width(150)))
+                    ImportSelected();
+            }
+
+            GUI.backgroundColor = previousBackgroundColor;
+
             EditorGUILayout.EndHorizontal();
+        }
+
+        private bool CanImport()
+        {
+            if (string.IsNullOrEmpty(_packagePath) ||
+                !File.Exists(_packagePath) ||
+                !_entries.Any(x => x.Selected))
+            {
+                return false;
+            }
+
+            if (_remapDestination &&
+                !ValidateAssetFolder(_destination, out _, out _))
+            {
+                return false;
+            }
+
+            if (_groupTopLevelItems &&
+                !ValidateFolderName(_groupFolderName, out _, out _))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         private void ClearPackageInput()
@@ -277,6 +328,209 @@ namespace JustUnitypackageImporter2Folder
                     $"（{_packageMetrics.CompressionRatio:F2} 倍）",
                     warningStyle);
             }
+        }
+
+        private void DrawDestinationPresets()
+        {
+            EditorGUILayout.Space(4);
+
+            string[] options = new string[_destinationPresets.Count + 1];
+            options[0] = "プリセットを選択...";
+            for (int i = 0; i < _destinationPresets.Count; i++)
+            {
+                string displayName = (_destinationPresets[i].DisplayName ?? "").Trim();
+                options[i + 1] = string.IsNullOrEmpty(displayName)
+                    ? $"(名称未設定 {i + 1})"
+                    : displayName;
+            }
+
+            int popupValue = _selectedPresetIndex >= 0 &&
+                             _selectedPresetIndex < _destinationPresets.Count
+                ? _selectedPresetIndex + 1
+                : 0;
+            int newPopupValue = EditorGUILayout.Popup(
+                "Import先プリセット",
+                popupValue,
+                options);
+
+            if (newPopupValue != popupValue)
+            {
+                _selectedPresetIndex = newPopupValue - 1;
+                if (_selectedPresetIndex >= 0)
+                    ApplyDestinationPreset(_selectedPresetIndex);
+            }
+
+            _showPresetEditor = EditorGUILayout.Foldout(
+                _showPresetEditor,
+                "プリセットを管理",
+                true);
+            if (!_showPresetEditor)
+                return;
+
+            _presetScroll = EditorGUILayout.BeginScrollView(
+                _presetScroll,
+                GUI.skin.box,
+                GUILayout.MaxHeight(220f));
+
+            int deleteIndex = -1;
+            int moveFrom = -1;
+            int moveTo = -1;
+            bool changed = false;
+
+            for (int i = 0; i < _destinationPresets.Count; i++)
+            {
+                DestinationPreset preset = _destinationPresets[i];
+                EditorGUILayout.BeginVertical(GUI.skin.box);
+
+                EditorGUILayout.BeginHorizontal();
+                string displayName = EditorGUILayout.TextField("表示名", preset.DisplayName ?? "");
+                if (displayName != preset.DisplayName)
+                {
+                    preset.DisplayName = displayName;
+                    changed = true;
+                }
+
+                using (new EditorGUI.DisabledScope(i == 0))
+                {
+                    if (GUILayout.Button("▲", GUILayout.Width(28)))
+                    {
+                        moveFrom = i;
+                        moveTo = i - 1;
+                    }
+                }
+
+                using (new EditorGUI.DisabledScope(i == _destinationPresets.Count - 1))
+                {
+                    if (GUILayout.Button("▼", GUILayout.Width(28)))
+                    {
+                        moveFrom = i;
+                        moveTo = i + 1;
+                    }
+                }
+
+                if (GUILayout.Button("削除", GUILayout.Width(52)))
+                    deleteIndex = i;
+                EditorGUILayout.EndHorizontal();
+
+                string destinationPath = EditorGUILayout.TextField(
+                    "インポート先パス",
+                    preset.DestinationPath ?? "");
+                if (destinationPath != preset.DestinationPath)
+                {
+                    preset.DestinationPath = destinationPath;
+                    changed = true;
+                }
+
+                EditorGUILayout.EndVertical();
+            }
+
+            EditorGUILayout.EndScrollView();
+
+            if (moveFrom >= 0)
+            {
+                DestinationPreset moving = _destinationPresets[moveFrom];
+                _destinationPresets.RemoveAt(moveFrom);
+                _destinationPresets.Insert(moveTo, moving);
+
+                if (_selectedPresetIndex == moveFrom)
+                    _selectedPresetIndex = moveTo;
+                else if (_selectedPresetIndex == moveTo)
+                    _selectedPresetIndex = moveFrom;
+                changed = true;
+            }
+
+            if (deleteIndex >= 0)
+            {
+                string deletedName = _destinationPresets[deleteIndex].DisplayName;
+                _destinationPresets.RemoveAt(deleteIndex);
+                if (_selectedPresetIndex == deleteIndex)
+                    _selectedPresetIndex = -1;
+                else if (_selectedPresetIndex > deleteIndex)
+                    _selectedPresetIndex--;
+                changed = true;
+                JUILog.Info($"Import先プリセットを削除しました: {deletedName}");
+            }
+
+            if (GUILayout.Button("現在のImport先をプリセットに追加"))
+            {
+                if (ValidateAssetFolder(_destination, out string normalized, out string error))
+                {
+                    _destinationPresets.Add(new DestinationPreset
+                    {
+                        DisplayName = $"プリセット {_destinationPresets.Count + 1}",
+                        DestinationPath = normalized
+                    });
+                    _selectedPresetIndex = _destinationPresets.Count - 1;
+                    changed = true;
+                    JUILog.Info($"Import先プリセットを追加しました: {normalized}");
+                }
+                else
+                {
+                    EditorUtility.DisplayDialog("JUI", error, "OK");
+                }
+            }
+
+            if (changed)
+                SaveDestinationPresets();
+        }
+
+        private void ApplyDestinationPreset(int index)
+        {
+            if (index < 0 || index >= _destinationPresets.Count)
+                return;
+
+            DestinationPreset preset = _destinationPresets[index];
+            if (!ValidateAssetFolder(
+                    preset.DestinationPath,
+                    out string normalized,
+                    out string error))
+            {
+                EditorUtility.DisplayDialog(
+                    "JUI - プリセットエラー",
+                    $"プリセット「{preset.DisplayName}」を適用できません。\n\n{error}",
+                    "OK");
+                JUILog.Warning($"無効なImport先プリセットです: {preset.DisplayName} / {preset.DestinationPath}");
+                return;
+            }
+
+            preset.DestinationPath = normalized;
+            _destination = normalized;
+            _remapDestination = true;
+            SaveDestinationPresets();
+            JUILog.Info($"Import先プリセットを適用しました: {preset.DisplayName} / {_destination}");
+            Repaint();
+        }
+
+        private void LoadDestinationPresets()
+        {
+            string json = JUISettings.GetString(PrefDestinationPresets, "");
+            _destinationPresets = new List<DestinationPreset>();
+
+            if (string.IsNullOrEmpty(json))
+                return;
+
+            try
+            {
+                DestinationPresetCollection collection =
+                    JsonUtility.FromJson<DestinationPresetCollection>(json);
+                if (collection != null && collection.Items != null)
+                    _destinationPresets = collection.Items;
+            }
+            catch (Exception ex)
+            {
+                JUILog.Error("Import先プリセットの読み込みに失敗しました。", ex);
+            }
+        }
+
+        private void SaveDestinationPresets()
+        {
+            var collection = new DestinationPresetCollection
+            {
+                Items = _destinationPresets
+            };
+            JUISettings.SetString(
+                PrefDestinationPresets,
+                JsonUtility.ToJson(collection));
         }
 
         private void LogPackageMetricWarnings()
