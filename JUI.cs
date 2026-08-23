@@ -8,6 +8,19 @@ using System.Text;
 using UnityEditor;
 using UnityEngine;
 
+/*
+1. Unity Editorの `Tools > JUI` を開きます。
+2. `.unitypackage` をウィンドウへドラッグ＆ドロップするか、「参照」から選択します。
+3. 「インポート先を変更する」のON/OFFを選択します。
+4. UnityPackageのトップレベル項目が複数ある場合は、一つのフォルダへまとめるか選択します。
+5. ONの場合は、インポート先となる `Assets` 配下のフォルダを指定します。
+6. ツリーに表示された内容を確認し、不要なAssetのチェックを外します。
+7. 「これでインポートする」を押します。
+8. 競合警告と最終確認を確認してImportを実行します。
+
+Importが正常に完了すると、UnityPackage入力欄と内容一覧はクリアされます。
+*/
+
 namespace JustUnitypackageImporter2Folder
 {
     [Serializable]
