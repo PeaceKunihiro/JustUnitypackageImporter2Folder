@@ -52,16 +52,42 @@ Unity標準のUnityPackage Importを置き換えるものではありません�
 
 3. Unityによるスクリプトのコンパイル完了後、メニューに `Tools > JUI` が追加されます。
 
-**Uniypackage版による追加**
-1. Uniypackagesフォルダから最新のUniypackageを取得します。
+**UnityPackage版による追加**
+1. `Uniypackages`フォルダから最新のUnityPackageを取得します。
 　例
    ```
    JustUnitypackageImporter2Folder_v0.1.unitypackage
    ```
-2. 導入するUnityプロジェクトでUniypackageを起動します。
+2. 導入するUnityプロジェクトでUnityPackageを起動します。
 >[!NOTE]
->Uniypackage版のフォルダ階層は以下となっています。
+>UnityPackage版のフォルダ階層は以下となっています。
 >PeaceKunihiro>Tools>JUI
+
+### GitHubから保存するときの注意
+
+> [!WARNING]
+> GitHubのファイル一覧やプレビューページでリンクを右クリックし、「リンク先を名前を付けて保存する」を実行しないでください。ファイル本体ではなくGitHubのHTMLページが、`.unitypackage`や`.cs`の名前で保存される場合があります。
+
+HTMLページを誤って保存すると、次の問題が発生します。
+
+- UnityPackageのImport時に`Failed to import package with error: Couldn't decompress package`と表示される
+- `JUI.cs`の内容がHTMLになり、Unityで多数のコンパイルエラーが発生する
+- ファイル名と拡張子は正しく見えるため、破損に気づきにくい
+
+GitHubから取得する場合は、次のいずれかの方法を使用してください。
+
+- Releasesに添付された配布ファイルを通常の左クリックでダウンロードする
+- `JUI.cs`のファイルページを開き、`Raw`またはダウンロードボタンから取得する
+- GitHubの`Code > Download ZIP`からリポジトリ全体を取得する
+- Gitを使用してリポジトリをcloneする
+
+取得後、`JUI.cs`の先頭が次の内容になっていることを確認できます。
+
+```csharp
+#if UNITY_EDITOR
+```
+
+先頭が`<!DOCTYPE html>`、`<html>`などになっている場合は、ファイル本体ではなくWebページを保存しています。ファイルを削除し、上記の方法で再取得してください。
 
 ## 基本的な使い方
 
